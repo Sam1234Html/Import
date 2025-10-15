@@ -1,0 +1,120 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# --- 1. Synthetic Data Generation (Mimicking COMPAS structure) ---
+# NOTE: In a real assignment, you would load the actual 'compas-scores-two-years.csv' dataset.
+np.random.seed(42)
+N = 1000
+data = {
+    'race': np.random.choice(['White', 'Black', 'Other'], N, p=[0.4, 0.5, 0.1]),
+    # High risk score (8-10) is coded as 1, Low/Medium (1-7) as 0
+    'compas_risk_score': np.random.choice([0, 1], N, p=[0.6, 0.4]),
+    # Actual recidivism (recid) within two years: 1 = Yes, 0 = No
+    'two_year_recid': np.random.choice([0, 1], N, p=[0.7, 0.3])
+}
+df = pd.DataFrame(data)
+
+# Introduce simulated bias (Higher false positive rate for Black defendants):
+# For Black individuals who did NOT recidivate (two_year_recid == 0), increase high risk score (compas_risk_score == 1)
+black_non_recid_indices = df[(df['race'] == 'Black') & (df['two_year_recid'] == 0)].index
+# Randomly set 45% of these to high risk (False Positive)
+num_to_bias = int(len(black_non_recid_indices) * 0.45)
+biased_indices = np.random.choice(black_non_recid_indices, num_to_bias, replace=False)
+df.loc[biased_indices, 'compas_risk_score'] = 1
+
+# Randomly set 23% of White non-recidivists to high risk (False Positive)
+white_non_recid_indices = df[(df['race'] == 'White') & (df['two_year_recid'] == 0)].index
+num_to_bias_white = int(len(white_non_recid_indices) * 0.23)
+biased_indices_white = np.random.choice(white_non_recid_indices, num_to_bias_white, replace=False)
+df.loc[biased_indices_white, 'compas_risk_score'] = 1
+
+# --- 2. Defining Groups and Outcomes ---
+
+# Protected Attribute: 'race'
+privileged_groups = [{'race': 'White'}]
+unprivileged_groups = [{'race': 'Black'}]
+
+# Favorable outcome: 'two_year_recid' == 0 (No Recidivism)
+# Unfavorable outcome (Prediction): 'compas_risk_score' == 1 (High Risk)
+favorable_label = 0 # No Recidivism
+unfavorable_prediction = 1 # High Risk
+
+print("--- AI Fairness Audit Simulation (COMPAS Dataset) ---")
+print(f"Total Records: {N}\n")
+
+# --- 3. Fairness Metric Calculation (Simulating AIF360 logic) ---
+
+# Selection Rate (P(Y_pred=unfavorable)) for each group
+unprivileged_mask = df['race'].isin([g['race'] for g in unprivileged_groups])
+privileged_mask = df['race'].isin([g['race'] for g in privileged_groups])
+
+selection_rate_unprivileged = df[unprivileged_mask]['compas_risk_score'].mean()
+selection_rate_privileged = df[privileged_mask]['compas_risk_score'].mean()
+
+# A. Disparate Impact Ratio (DIR)
+# P(unfavorable prediction | unprivileged) / P(unfavorable prediction | privileged)
+disparate_impact_ratio = selection_rate_unprivileged / selection_rate_privileged
+
+# B. Equal Opportunity Difference (EOD)
+# Focuses on the False Positive Rate (FPR), or error for non-recidivists (Actual Y=favorable)
+
+# False Positive Rate (FPR): P(Y_pred=unfavorable | Y_actual=favorable)
+# The rate at which the model incorrectly predicts high risk (1) for those who did not recidivate (0)
+
+# FPR for Unprivileged (Black):
+actual_favorable_unprivileged = df[unprivileged_mask & (df['two_year_recid'] == favorable_label)]
+false_positives_unprivileged = actual_favorable_unprivileged[actual_favorable_unprivileged['compas_risk_score'] == unfavorable_prediction]
+fpr_unprivileged = len(false_positives_unprivileged) / len(actual_favorable_unprivileged) if len(actual_favorable_unprivileged) > 0 else 0
+
+# FPR for Privileged (White):
+actual_favorable_privileged = df[privileged_mask & (df['two_year_recid'] == favorable_label)]
+false_positives_privileged = actual_favorable_privileged[actual_favorable_privileged['compas_risk_score'] == unfavorable_prediction]
+fpr_privileged = len(false_positives_privileged) / len(actual_favorable_privileged) if len(actual_favorable_privileged) > 0 else 0
+
+# Equal Opportunity Difference (EOD): FPR_unprivileged - FPR_privileged
+# Note: AIF360 often uses True Positive Rate difference, but in the COMPAS context, FPR disparity (False Flags) is the key bias.
+# We'll calculate the difference in FPR, which is a measure of fairness for the non-recidivating individuals.
+equal_opportunity_difference = fpr_unprivileged - fpr_privileged
+
+# --- 4. Display Results ---
+
+print("--- Fairness Metrics ---")
+print(f"Selection Rate (Black/Unprivileged): {selection_rate_unprivileged:.4f}")
+print(f"Selection Rate (White/Privileged): {selection_rate_privileged:.4f}")
+print(f"Disparate Impact Ratio (DIR): {disparate_impact_ratio:.4f} (Ideal: 1.0, Fair Range: 0.8-1.25)")
+print(f"\nFalse Positive Rate (Black): {fpr_unprivileged:.4f}")
+print(f"False Positive Rate (White): {fpr_privileged:.4f}")
+print(f"Equal Opportunity Difference (FPR): {equal_opportunity_difference:.4f} (Ideal: 0.0)")
+
+if disparate_impact_ratio < 0.8 or disparate_impact_ratio > 1.25:
+    print("\nCONCLUSION: Disparate Impact Ratio is outside the acceptable 0.8-1.25 range. Bias Detected.")
+if abs(equal_opportunity_difference) > 0.1:
+     print("CONCLUSION: Equal Opportunity Difference (FPR) shows significant bias. Black defendants are falsely flagged at a much higher rate.")
+
+# --- 5. Visualization (False Positive Rate Disparity) ---
+
+labels = ['Black (Unprivileged)', 'White (Privileged)']
+fpr_values = [fpr_unprivileged, fpr_privileged]
+
+plt.figure(figsize=(8, 6))
+bars = plt.bar(labels, fpr_values, color=['#e53e3e', '#3182ce'])
+plt.title('Disparity in False Positive Rate (FPR) by Race', fontsize=14)
+plt.ylabel('False Positive Rate (Rate of False Flags)', fontsize=12)
+plt.yticks(fontsize=10)
+plt.grid(axis='y', linestyle='--', alpha=0.7)
+
+# Adding data labels
+for bar in bars:
+    yval = bar.get_height()
+    plt.text(bar.get_x() + bar.get_width()/2, yval + 0.01, f'{yval:.2f}', ha='center', va='bottom', fontsize=10)
+
+plt.tight_layout()
+plt.show()
+
+# --- 6. Remediation Note (For the report/next steps) ---
+print("\n--- Next Steps for Remediation (Not runnable code) ---")
+print("1. Apply AIF360's 'Reweighting' pre-processing algorithm.")
+print("2. Apply AIF360's 'Optimized Preprocessing' to transform data representation.")
+print("3. Retrain the classifier using the debiased data/model.")
+print("4. Re-run audit to confirm DIR is closer to 1.0 and EOD is closer to 0.0.")
